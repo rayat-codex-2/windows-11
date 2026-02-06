@@ -1,86 +1,69 @@
-name: main
+name: Ubuntu Desktop Remote
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
-    runs-on: windows-2025
+  desktop-access:
+    runs-on: ubuntu-latest
     timeout-minutes: 600
 
     steps:
-      - name: Configure Core RDP, Mic, and Camera Settings
+      - name: Install Ubuntu Desktop (GNOME)
         run: |
-          # 1. Enable RDP Connections
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Lsa' -Name "LimitBlankPasswordUse" -Value 0 -Force
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          # Install the standard Ubuntu Desktop and RDP server
+          sudo apt-get install -y ubuntu-desktop xrdp
           
-          # 2. Start Windows Audio Services (CRITICAL FOR MIC)
-          sc.exe config Audiosrv start= auto
-          sc.exe config AudioEndpointBuilder start= auto
-          net start Audiosrv
-          net start AudioEndpointBuilder
-
-          # 3. Enable Mic & Camera Redirection
-          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableAudioCapture" -Value 0 -Force
+          # Fix for GNOME sessions over RDP
+          sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
           
-          $registryPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-          if (!(Test-Path $registryPath)) { New-Item -Path $registryPath -Force }
-          Set-ItemProperty -Path $registryPath -Name "fAllowVideoRedirection" -Value 1 -Force
-          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableCam" -Value 0 -Force
+          # Prevent the 'Authentication Required' pop-ups on login
+          sudo bash -c 'cat > /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla <<EOF
+          [Allow Colord Manager]
+          Identity=unix-user:*
+          Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
+          ResultAny=no
+          ResultInactive=no
+          ResultActive=yes
+          EOF'
 
-          # 4. Global Privacy Permissions
-          $micPrivacyPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
-          if (!(Test-Path $micPrivacyPath)) { New-Item -Path $micPrivacyPath -Force }
-          Set-ItemProperty -Path $micPrivacyPath -Name "Value" -Value "Allow" -Force
-
-          $camPrivacyPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam"
-          if (!(Test-Path $camPrivacyPath)) { New-Item -Path $camPrivacyPath -Force }
-          Set-ItemProperty -Path $camPrivacyPath -Name "Value" -Value "Allow" -Force
-
-          # 5. Firewall
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
-          
-          Restart-Service -Name TermService -Force
-
-      - name: Create RDP User (Rayat) No Password
+      - name: Create User (Rayat)
         run: |
-          if (-not (Get-LocalUser -Name "Rayat" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "Rayat" -NoPassword -AccountNeverExpires
-          }
-          Set-LocalUser -Name "Rayat" -PasswordNeverExpires $true
-          $user = [ADSI]"WinNT://localhost/Rayat,user"
-          $user.Put("PasswordExpired", 0)
-          $user.SetInfo()
-          Add-LocalGroupMember -Group "Administrators" -Member "Rayat"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Rayat"
+          sudo useradd -m -s /bin/bash Rayat
+          sudo usermod -aG sudo Rayat
+          # Set a default password because GNOME Keyring requires one to function properly
+          echo "Rayat:password123" | sudo chpasswd
+          
+          # Set the session to GNOME
+          echo "export GNOME_SHELL_SESSION_MODE=ubuntu" | sudo tee /home/Rayat/.xsessionrc
+          echo "export XDG_CURRENT_DESKTOP=ubuntu:GNOME" | sudo tee -a /home/Rayat/.xsessionrc
+          echo "export XDG_SESSION_TYPE=x11" | sudo tee -a /home/Rayat/.xsessionrc
+          sudo chown Rayat:Rayat /home/Rayat/.xsessionrc
 
       - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.92.3-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+        run: curl -fsSL https://tailscale.com/install.sh | sh
 
       - name: Establish Tailscale Connection
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          if (-not $tsIP) { exit 1 }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-     
+          sudo tailscale up --auth-key=${TAILSCALE_AUTHKEY} --hostname=ubuntu-gui-$GITHUB_RUN_ID
+          echo "TAILSCALE_IP=$(tailscale ip -4)" >> $env:GITHUB_ENV # Note: used $env: for consistency with your flow
+
+      - name: Start Services
+        run: |
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+          # Ensure the firewall allows RDP
+          sudo ufw allow 3389/tcp
+
       - name: Maintain Connection
         run: |
-          Write-Host "`n=== RDP READY FOR RAYAT ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          while ($true) { Start-Sleep -Seconds 300 }
+          TS_IP=$(tailscale ip -4)
+          echo "=== UBUNTU DESKTOP READY ==="
+          echo "Address: $TS_IP"
+          echo "Username: Rayat"
+          echo "Password: password123"
+          tail -f /dev/null
