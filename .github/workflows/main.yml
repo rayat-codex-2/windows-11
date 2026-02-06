@@ -9,17 +9,26 @@ jobs:
     timeout-minutes: 600
 
     steps:
-      - name: Install Ubuntu Desktop (GNOME)
+      - name: Fast & Silent Desktop Install
         run: |
+          # 1. Force non-interactive mode and skip service restart prompts
           export DEBIAN_FRONTEND=noninteractive
+          export NEEDRESTART_MODE=a 
+          
           sudo apt-get update
-          # Install the standard Ubuntu Desktop and RDP server
-          sudo apt-get install -y ubuntu-desktop xrdp
           
-          # Fix for GNOME sessions over RDP
-          sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config
+          # 2. Install only the essentials for a desktop experience (Fast Mode)
+          # --no-install-recommends prevents downloading hundreds of unnecessary drivers
+          sudo apt-get install -y --no-install-recommends \
+            ubuntu-desktop-minimal \
+            xrdp \
+            gnome-terminal \
+            dbus-x11
+
+          # 3. Fix RDP Permissions silently
+          sudo adduser xrdp ssl-cert
           
-          # Prevent the 'Authentication Required' pop-ups on login
+          # 4. Suppress Polkit pop-ups (prevents RDP freeze)
           sudo bash -c 'cat > /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla <<EOF
           [Allow Colord Manager]
           Identity=unix-user:*
@@ -33,37 +42,24 @@ jobs:
         run: |
           sudo useradd -m -s /bin/bash Rayat
           sudo usermod -aG sudo Rayat
-          # Set a default password because GNOME Keyring requires one to function properly
           echo "Rayat:password123" | sudo chpasswd
           
-          # Set the session to GNOME
-          echo "export GNOME_SHELL_SESSION_MODE=ubuntu" | sudo tee /home/Rayat/.xsessionrc
-          echo "export XDG_CURRENT_DESKTOP=ubuntu:GNOME" | sudo tee -a /home/Rayat/.xsessionrc
-          echo "export XDG_SESSION_TYPE=x11" | sudo tee -a /home/Rayat/.xsessionrc
+          # Set GNOME as default for this user
+          echo "export GNOME_SHELL_SESSION_MODE=ubuntu" > ~/.xsessionrc
+          echo "export XDG_CURRENT_DESKTOP=ubuntu:GNOME" >> ~/.xsessionrc
+          echo "export XDG_SESSION_TYPE=x11" >> ~/.xsessionrc
+          sudo cp ~/.xsessionrc /home/Rayat/.xsessionrc
           sudo chown Rayat:Rayat /home/Rayat/.xsessionrc
 
-      - name: Install Tailscale
-        run: curl -fsSL https://tailscale.com/install.sh | sh
-
-      - name: Establish Tailscale Connection
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+      - name: Network & Tailscale
         run: |
-          sudo tailscale up --auth-key=${TAILSCALE_AUTHKEY} --hostname=ubuntu-gui-$GITHUB_RUN_ID
-          echo "TAILSCALE_IP=$(tailscale ip -4)" >> $env:GITHUB_ENV # Note: used $env: for consistency with your flow
-
-      - name: Start Services
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --auth-key=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=ubuntu-gui
+          
+      - name: Launch & Maintain
         run: |
           sudo systemctl enable xrdp
-          sudo systemctl restart xrdp
-          # Ensure the firewall allows RDP
-          sudo ufw allow 3389/tcp
-
-      - name: Maintain Connection
-        run: |
-          TS_IP=$(tailscale ip -4)
-          echo "=== UBUNTU DESKTOP READY ==="
-          echo "Address: $TS_IP"
-          echo "Username: Rayat"
-          echo "Password: password123"
+          sudo systemctl start xrdp
+          echo "=== CONNECT NOW ==="
+          tailscale ip -4
           tail -f /dev/null
