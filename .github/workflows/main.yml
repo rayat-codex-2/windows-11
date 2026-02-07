@@ -4,41 +4,59 @@ on:
   workflow_dispatch:
 
 jobs:
-  desktop-access:
+  secure-remote:
     runs-on: ubuntu-latest
+    timeout-minutes: 600
+
     steps:
       - name: Silent Install Essentials
         run: |
+          # Force non-interactive and auto-restart services
           export DEBIAN_FRONTEND=noninteractive
-          # Tell needrestart to be quiet and just do it
+          export NEEDRESTART_MODE=a
+          
           sudo apt-get update
           sudo apt-get install -y -q --no-install-recommends \
-            xfce4 xfce4-goodies xrdp dbus-x11
+            xfce4 xfce4-goodies xrdp dbus-x11 pulseaudio
 
-      - name: Configure User & XRDP
+      - name: Configure User & Desktop Session
         run: |
           # Create user Rayat
           sudo useradd -m -s /bin/bash Rayat
           echo "Rayat:password123" | sudo chpasswd
           sudo usermod -aG sudo Rayat
           
-          # Setup XFCE for RDP (This bypasses GDM entirely)
-          echo "xfce4-session" > /home/Rayat/.xsession
+          # Fix Permission Denied: Write to temp then move with sudo
+          echo "xfce4-session" > xsession_tmp
+          sudo mv xsession_tmp /home/Rayat/.xsession
           sudo chown Rayat:Rayat /home/Rayat/.xsession
           
-          # Force XRDP to use the .xsession file
-          sudo sed -i 's/test -x \/etc\/X11\/Xsession \&\& exec \/etc\/X11\/Xsession/exec startxfce4/g' /etc/xrdp/startwm.sh
+          # Bypass GDM: Force XRDP to launch XFCE directly
+          sudo sed -i 's|/etc/X11/Xsession|exec startxfce4|g' /etc/xrdp/startwm.sh
           
+          # Configure XRDP permissions
           sudo adduser xrdp ssl-cert
+          sudo systemctl enable xrdp
           sudo systemctl restart xrdp
 
-      - name: Tailscale & Finalize
+      - name: Install and Connect Tailscale
         env:
           TS_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --auth-key=$TS_KEY --hostname=fast-ubuntu
+          sudo tailscale up --auth-key=$TS_KEY --hostname=gh-ubuntu-runner
           
-          echo "=== CONNECTION INFO ==="
-          tailscale ip -4
+          # Get IP for the next step
+          TS_IP=$(tailscale ip -4)
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+
+      - name: RDP Connection Ready
+        run: |
+          echo "=========================================="
+          echo "STATUS: RDP SERVER ACTIVE"
+          echo "ADDRESS: ${{ env.TAILSCALE_IP }}"
+          echo "USER: Rayat"
+          echo "PASS: password123"
+          echo "=========================================="
+          # Keep runner alive
           tail -f /dev/null
