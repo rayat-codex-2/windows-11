@@ -1,4 +1,4 @@
-name: Ubuntu Desktop Remote
+name: Ubuntu Fast RDP
 
 on:
   workflow_dispatch:
@@ -6,60 +6,39 @@ on:
 jobs:
   desktop-access:
     runs-on: ubuntu-latest
-    timeout-minutes: 600
-
     steps:
-      - name: Fast & Silent Desktop Install
+      - name: Silent Install Essentials
         run: |
-          # 1. Force non-interactive mode and skip service restart prompts
           export DEBIAN_FRONTEND=noninteractive
-          export NEEDRESTART_MODE=a 
-          
+          # Tell needrestart to be quiet and just do it
           sudo apt-get update
-          
-          # 2. Install only the essentials for a desktop experience (Fast Mode)
-          # --no-install-recommends prevents downloading hundreds of unnecessary drivers
-          sudo apt-get install -y --no-install-recommends \
-            ubuntu-desktop-minimal \
-            xrdp \
-            gnome-terminal \
-            dbus-x11
+          sudo apt-get install -y -q --no-install-recommends \
+            xfce4 xfce4-goodies xrdp dbus-x11
 
-          # 3. Fix RDP Permissions silently
-          sudo adduser xrdp ssl-cert
-          
-          # 4. Suppress Polkit pop-ups (prevents RDP freeze)
-          sudo bash -c 'cat > /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla <<EOF
-          [Allow Colord Manager]
-          Identity=unix-user:*
-          Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
-          ResultAny=no
-          ResultInactive=no
-          ResultActive=yes
-          EOF'
-
-      - name: Create User (Rayat)
+      - name: Configure User & XRDP
         run: |
+          # Create user Rayat
           sudo useradd -m -s /bin/bash Rayat
-          sudo usermod -aG sudo Rayat
           echo "Rayat:password123" | sudo chpasswd
+          sudo usermod -aG sudo Rayat
           
-          # Set GNOME as default for this user
-          echo "export GNOME_SHELL_SESSION_MODE=ubuntu" > ~/.xsessionrc
-          echo "export XDG_CURRENT_DESKTOP=ubuntu:GNOME" >> ~/.xsessionrc
-          echo "export XDG_SESSION_TYPE=x11" >> ~/.xsessionrc
-          sudo cp ~/.xsessionrc /home/Rayat/.xsessionrc
-          sudo chown Rayat:Rayat /home/Rayat/.xsessionrc
+          # Setup XFCE for RDP (This bypasses GDM entirely)
+          echo "xfce4-session" > /home/Rayat/.xsession
+          sudo chown Rayat:Rayat /home/Rayat/.xsession
+          
+          # Force XRDP to use the .xsession file
+          sudo sed -i 's/test -x \/etc\/X11\/Xsession \&\& exec \/etc\/X11\/Xsession/exec startxfce4/g' /etc/xrdp/startwm.sh
+          
+          sudo adduser xrdp ssl-cert
+          sudo systemctl restart xrdp
 
-      - name: Network & Tailscale
+      - name: Tailscale & Finalize
+        env:
+          TS_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --auth-key=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=ubuntu-gui
+          sudo tailscale up --auth-key=$TS_KEY --hostname=fast-ubuntu
           
-      - name: Launch & Maintain
-        run: |
-          sudo systemctl enable xrdp
-          sudo systemctl start xrdp
-          echo "=== CONNECT NOW ==="
+          echo "=== CONNECTION INFO ==="
           tailscale ip -4
           tail -f /dev/null
