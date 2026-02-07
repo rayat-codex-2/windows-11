@@ -11,41 +11,41 @@ jobs:
     steps:
       - name: 1. Silent Install Essentials
         run: |
-          # Force non-interactive and auto-accept service restarts
           export DEBIAN_FRONTEND=noninteractive
           export NEEDRESTART_MODE=a
-          
           sudo apt-get update
           sudo apt-get install -y -q --no-install-recommends \
-            xfce4 xfce4-goodies xrdp dbus-x11 pulseaudio
+            xfce4 xfce4-goodies xrdp dbus-x11 pulseaudio x11-xserver-utils
 
-      - name: 2. Configure User & Force Desktop Session
+      - name: 2. Configure User & Nuclear Desktop Force
         run: |
           # Create user Rayat
           sudo useradd -m -s /bin/bash Rayat
           echo "Rayat:password123" | sudo chpasswd
           sudo usermod -aG sudo Rayat
           
-          # Fix Permission Denied: Write to temp then move with sudo
-          echo "xfce4-session" > xsession_tmp
+          # Force XFCE session with D-Bus support
+          # Using dbus-launch ensures the desktop actually starts
+          echo "exec dbus-launch --exit-with-session startxfce4" > xsession_tmp
           sudo mv xsession_tmp /home/Rayat/.xsession
           sudo chown Rayat:Rayat /home/Rayat/.xsession
           
-          # Fix Teal Screen: Rewrite startwm.sh to launch XFCE directly
-          # This replaces the entire script with a clean launch command
+          # Wipe and replace startwm.sh completely
           sudo bash -c 'cat > /etc/xrdp/startwm.sh <<EOF
           #!/bin/sh
           if [ -r /etc/default/locale ]; then
             . /etc/default/locale
             export LANG LANGUAGE
           fi
-          exec startxfce4
+          # Ensure environment is clean
+          unset DBUS_SESSION_BUS_ADDRESS
+          unset XDG_RUNTIME_DIR
+          . /etc/X11/Xsession
           EOF'
           sudo chmod +x /etc/xrdp/startwm.sh
-          
-          # Add XRDP to security groups
+
+          # Fix XRDP Permissions
           sudo adduser xrdp ssl-cert
-          sudo systemctl enable xrdp
           sudo systemctl restart xrdp
 
       - name: 3. Install and Connect Tailscale
@@ -54,18 +54,12 @@ jobs:
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
           sudo tailscale up --auth-key=$TS_KEY --hostname=gh-ubuntu-runner
-          
-          # Capture IP for the connection banner
-          TS_IP=$(tailscale ip -4)
-          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+          echo "TAILSCALE_IP=$(tailscale ip -4)" >> $GITHUB_ENV
 
       - name: 4. RDP Connection Ready
         run: |
-          echo "=========================================="
-          echo "STATUS: RDP SERVER ACTIVE"
-          echo "ADDRESS: ${{ env.TAILSCALE_IP }}"
-          echo "USER: Rayat"
-          echo "PASS: password123"
-          echo "=========================================="
-          # Keep the runner alive indefinitely
+          echo "=== CONNECT NOW ==="
+          echo "Address: ${{ env.TAILSCALE_IP }}"
+          echo "Username: Rayat"
+          echo "Password: password123"
           tail -f /dev/null
