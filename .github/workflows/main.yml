@@ -9,9 +9,9 @@ jobs:
     timeout-minutes: 600
 
     steps:
-      - name: Silent Install Essentials
+      - name: 1. Silent Install Essentials
         run: |
-          # Force non-interactive and auto-restart services
+          # Force non-interactive and auto-accept service restarts
           export DEBIAN_FRONTEND=noninteractive
           export NEEDRESTART_MODE=a
           
@@ -19,7 +19,7 @@ jobs:
           sudo apt-get install -y -q --no-install-recommends \
             xfce4 xfce4-goodies xrdp dbus-x11 pulseaudio
 
-      - name: Configure User & Desktop Session
+      - name: 2. Configure User & Force Desktop Session
         run: |
           # Create user Rayat
           sudo useradd -m -s /bin/bash Rayat
@@ -31,26 +31,35 @@ jobs:
           sudo mv xsession_tmp /home/Rayat/.xsession
           sudo chown Rayat:Rayat /home/Rayat/.xsession
           
-          # Bypass GDM: Force XRDP to launch XFCE directly
-          sudo sed -i 's|/etc/X11/Xsession|exec startxfce4|g' /etc/xrdp/startwm.sh
+          # Fix Teal Screen: Rewrite startwm.sh to launch XFCE directly
+          # This replaces the entire script with a clean launch command
+          sudo bash -c 'cat > /etc/xrdp/startwm.sh <<EOF
+          #!/bin/sh
+          if [ -r /etc/default/locale ]; then
+            . /etc/default/locale
+            export LANG LANGUAGE
+          fi
+          exec startxfce4
+          EOF'
+          sudo chmod +x /etc/xrdp/startwm.sh
           
-          # Configure XRDP permissions
+          # Add XRDP to security groups
           sudo adduser xrdp ssl-cert
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
 
-      - name: Install and Connect Tailscale
+      - name: 3. Install and Connect Tailscale
         env:
           TS_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
           sudo tailscale up --auth-key=$TS_KEY --hostname=gh-ubuntu-runner
           
-          # Get IP for the next step
+          # Capture IP for the connection banner
           TS_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
-      - name: RDP Connection Ready
+      - name: 4. RDP Connection Ready
         run: |
           echo "=========================================="
           echo "STATUS: RDP SERVER ACTIVE"
@@ -58,5 +67,5 @@ jobs:
           echo "USER: Rayat"
           echo "PASS: password123"
           echo "=========================================="
-          # Keep runner alive
+          # Keep the runner alive indefinitely
           tail -f /dev/null
