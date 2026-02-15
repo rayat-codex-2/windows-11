@@ -54,26 +54,50 @@ jobs:
 
       - name: Install and Setup AnyDesk
         run: |
-          # 1. Download
+          # 1. Download AnyDesk
           Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile "AnyDesk.exe"
           
-          # 2. Install to C:\AnyDesk
+          # 2. Silent Install to C:\AnyDesk
           $instDir = "$env:SystemDrive\AnyDesk"
           Start-Process .\AnyDesk.exe -ArgumentList "--install", $instDir, "--silent" -Wait
           
           $adPath = "$instDir\AnyDesk.exe"
-          
-          # 3. Set Password (Wait briefly for service to register)
           Start-Sleep -Seconds 5
+
+          # 3. Set Password for Unattended Access
           echo "RayatAccess2026" | & $adPath --set-password
           
-          # 4. Loop until AnyDesk ID is generated (Max 60 seconds)
+          # 4. Retrieve AnyDesk ID with a safe loop
           $anydeskId = ""
-          $idRetries = 0
-          while ([string]::IsNullOrWhiteSpace($anydeskId) -and $idRetries -lt 12) {
-              Write-Host "Waiting for AnyDesk ID to generate... (Attempt $($idRetries + 1))"
-              $anydeskId = & $adPath --get-id
-              if ([string]::IsNullOrWhiteSpace($anydeskId)) {
-                  Start-Sleep -Seconds 5
-                  $idRetries++
+          for ($i=0; $i -lt 15; $i++) {
+              $id = & $adPath --get-id
+              if ($id -match '\d+') {
+                  $anydeskId = $id.Trim()
+                  break
               }
+              Write-Host "Waiting for ID... (Attempt $i)"
+              Start-Sleep -Seconds 5
+          }
+
+          if (-not $anydeskId) {
+              Write-Error "Could not get AnyDesk ID"
+              exit 1
+          }
+
+          Write-Host "AnyDesk ID: $anydeskId"
+          echo "ANYDESK_ID=$anydeskId" >> $env:GITHUB_ENV
+          
+          # 5. Launch as a service in background
+          Start-Process $adPath --service
+
+      - name: Connection Summary
+        run: |
+          Write-Host "`n=========================================="
+          Write-Host "  RDP ADDRESS  : $env:TAILSCALE_IP"
+          Write-Host "  ANYDESK ID   : $env:ANYDESK_ID"
+          Write-Host "  ANYDESK PASS : RayatAccess2026"
+          Write-Host "  USER NAME    : Rayat"
+          Write-Host "==========================================`n"
+          
+          # Final loop to keep the runner alive
+          while ($true) { Start-Sleep -Seconds 300 }
