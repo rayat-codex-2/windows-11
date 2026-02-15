@@ -54,42 +54,49 @@ jobs:
 
       - name: Install and Setup AnyDesk
         run: |
-          # 1. Download AnyDesk
+          # 1. Download
           Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile "AnyDesk.exe"
           
-          # 2. Silent Install to C:\AnyDesk
+          # 2. Silent Install
           $instDir = "$env:SystemDrive\AnyDesk"
           Start-Process .\AnyDesk.exe -ArgumentList "--install", $instDir, "--silent" -Wait
           
           $adPath = "$instDir\AnyDesk.exe"
-          Start-Sleep -Seconds 5
+          
+          # 3. Force Start the Service and Wait
+          Start-Service -Name "AnyDesk" -ErrorAction SilentlyContinue
+          Start-Process $adPath --service
+          Start-Sleep -Seconds 15
 
-          # 3. Set Password for Unattended Access
+          # 4. Set Password
           echo "RayatAccess2026" | & $adPath --set-password
           
-          # 4. Retrieve AnyDesk ID with a safe loop
+          # 5. Retrieve AnyDesk ID with forced refresh
           $anydeskId = ""
-          for ($i=0; $i -lt 15; $i++) {
+          for ($i=0; $i -lt 20; $i++) {
+              # Try getting ID
               $id = & $adPath --get-id
               if ($id -match '\d+') {
                   $anydeskId = $id.Trim()
                   break
               }
-              Write-Host "Waiting for ID... (Attempt $i)"
+              # If ID fails, try getting Alias just in case
+              $alias = & $adPath --get-alias
+              if ($alias -match '@ad') {
+                  $anydeskId = $alias.Trim()
+                  break
+              }
+              Write-Host "Waiting for AnyDesk Network... (Attempt $i)"
               Start-Sleep -Seconds 5
           }
 
           if (-not $anydeskId) {
-              Write-Error "Could not get AnyDesk ID"
+              Write-Error "AnyDesk failed to network. Try connecting via Tailscale RDP first."
               exit 1
           }
 
-          Write-Host "AnyDesk ID: $anydeskId"
           echo "ANYDESK_ID=$anydeskId" >> $env:GITHUB_ENV
           
-          # 5. Launch as a service in background
-          Start-Process $adPath --service
-
       - name: Connection Summary
         run: |
           Write-Host "`n=========================================="
@@ -98,6 +105,4 @@ jobs:
           Write-Host "  ANYDESK PASS : RayatAccess2026"
           Write-Host "  USER NAME    : Rayat"
           Write-Host "==========================================`n"
-          
-          # Final loop to keep the runner alive
           while ($true) { Start-Sleep -Seconds 300 }
