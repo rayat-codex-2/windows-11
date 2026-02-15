@@ -57,29 +57,49 @@ jobs:
           # Download AnyDesk
           Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile "AnyDesk.exe"
           
-          # Install AnyDesk Silently
-          Start-Process .\AnyDesk.exe -ArgumentList "--install", "$env:ProgramFiles(x86)\AnyDesk", "--silent" -Wait
+          # Install to a specific clean directory
+          $instDir = "$env:SystemDrive\AnyDesk"
+          Start-Process .\AnyDesk.exe -ArgumentList "--install", $instDir, "--silent" -Wait
           
-          # Set a Password for Unattended Access (Replace 'YourStrongPassword' if desired)
-          echo "YourStrongPassword" | & "$env:ProgramFiles(x86)\AnyDesk\AnyDesk.exe" --set-password
+          $adPath = "$instDir\AnyDesk.exe"
           
-          # Get AnyDesk ID to show in GitHub logs
-          $anydeskId = & "$env:ProgramFiles(x86)\AnyDesk\AnyDesk.exe" --get-id
+          # Wait for the file to exist (the installer can be slow)
+          $retries = 0
+          while (!(Test-Path $adPath) -and $retries -lt 12) {
+              Write-Host "Waiting for AnyDesk installation to complete..."
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+
+          if (!(Test-Path $adPath)) { 
+              Write-Error "AnyDesk failed to install."
+              exit 1 
+          }
+
+          # Set Password (Change 'RayatAccess2026' to your preferred password)
+          echo "RayatAccess2026" | & $adPath --set-password
+          
+          # Get the AnyDesk ID
+          $anydeskId = & $adPath --get-id
+          $anydeskId = $anydeskId.Trim()
           echo "ANYDESK_ID=$anydeskId" >> $env:GITHUB_ENV
           
-          # Launch AnyDesk in the background as the system service
-          Start-Process "$env:ProgramFiles(x86)\AnyDesk\AnyDesk.exe" -WindowStyle Hidden
+          # Start AnyDesk hidden in the background
+          Start-Process $adPath -WindowStyle Hidden
 
-      - name: Verify RDP Accessibility
+      - name: Verify Connections
         run: |
-          Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          Write-Host "Checking RDP Port..."
+          Test-NetConnection -ComputerName localhost -Port 3389
+          Write-Host "AnyDesk ID is: $env:ANYDESK_ID"
 
-      - name: Maintain Connection + Watch RDP User
+      - name: Maintain Connection
         run: |
-          Write-Host "`n=== ACCESS CREDENTIALS ==="
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          Write-Host "AnyDesk ID: $env:ANYDESK_ID"
-          Write-Host "AnyDesk Password: YourStrongPassword"
-          Write-Host "User: Rayat (No Password)"
-          Write-Host "==========================`n"
-          while ($true) { Start-Sleep -Seconds 300 }
+          Write-Host "`n=========================================="
+          Write-Host "  RDP ADDRESS  : $env:TAILSCALE_IP"
+          Write-Host "  ANYDESK ID   : $env:ANYDESK_ID"
+          Write-Host "  ANYDESK PASS : RayatAccess2026"
+          Write-Host "  USER NAME    : Rayat"
+          Write-Host "==========================================`n"
+          
+          #
