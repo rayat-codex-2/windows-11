@@ -54,52 +54,26 @@ jobs:
 
       - name: Install and Setup AnyDesk
         run: |
-          # Download AnyDesk
+          # 1. Download
           Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile "AnyDesk.exe"
           
-          # Install to a specific clean directory
+          # 2. Install to C:\AnyDesk
           $instDir = "$env:SystemDrive\AnyDesk"
           Start-Process .\AnyDesk.exe -ArgumentList "--install", $instDir, "--silent" -Wait
           
           $adPath = "$instDir\AnyDesk.exe"
           
-          # Wait for the file to exist (the installer can be slow)
-          $retries = 0
-          while (!(Test-Path $adPath) -and $retries -lt 12) {
-              Write-Host "Waiting for AnyDesk installation to complete..."
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-
-          if (!(Test-Path $adPath)) { 
-              Write-Error "AnyDesk failed to install."
-              exit 1 
-          }
-
-          # Set Password (Change 'RayatAccess2026' to your preferred password)
+          # 3. Set Password (Wait briefly for service to register)
+          Start-Sleep -Seconds 5
           echo "RayatAccess2026" | & $adPath --set-password
           
-          # Get the AnyDesk ID
-          $anydeskId = & $adPath --get-id
-          $anydeskId = $anydeskId.Trim()
-          echo "ANYDESK_ID=$anydeskId" >> $env:GITHUB_ENV
-          
-          # Start AnyDesk hidden in the background
-          Start-Process $adPath -WindowStyle Hidden
-
-      - name: Verify Connections
-        run: |
-          Write-Host "Checking RDP Port..."
-          Test-NetConnection -ComputerName localhost -Port 3389
-          Write-Host "AnyDesk ID is: $env:ANYDESK_ID"
-
-      - name: Maintain Connection
-        run: |
-          Write-Host "`n=========================================="
-          Write-Host "  RDP ADDRESS  : $env:TAILSCALE_IP"
-          Write-Host "  ANYDESK ID   : $env:ANYDESK_ID"
-          Write-Host "  ANYDESK PASS : RayatAccess2026"
-          Write-Host "  USER NAME    : Rayat"
-          Write-Host "==========================================`n"
-          
-          #
+          # 4. Loop until AnyDesk ID is generated (Max 60 seconds)
+          $anydeskId = ""
+          $idRetries = 0
+          while ([string]::IsNullOrWhiteSpace($anydeskId) -and $idRetries -lt 12) {
+              Write-Host "Waiting for AnyDesk ID to generate... (Attempt $($idRetries + 1))"
+              $anydeskId = & $adPath --get-id
+              if ([string]::IsNullOrWhiteSpace($anydeskId)) {
+                  Start-Sleep -Seconds 5
+                  $idRetries++
+              }
