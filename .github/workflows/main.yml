@@ -1,65 +1,85 @@
-name: Ubuntu Fast RDP
+name: window 10(BlueStacks main)
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-remote:
-    runs-on: ubuntu-latest
-    timeout-minutes: 600
+  secure-rdp:
+    runs-on: windows-2025
+    timeout-minutes: 350
 
     steps:
-      - name: 1. Silent Install Essentials
+      - name: Configure Core RDP Settings
         run: |
-          export DEBIAN_FRONTEND=noninteractive
-          export NEEDRESTART_MODE=a
-          sudo apt-get update
-          sudo apt-get install -y -q --no-install-recommends \
-            xfce4 xfce4-goodies xrdp dbus-x11 pulseaudio x11-xserver-utils
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Lsa' -Name "LimitBlankPasswordUse" -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
 
-      - name: 2. Configure User & Nuclear Desktop Force
+      - name: Create RDP User (Rayat) No Password
         run: |
-          # Create user Rayat
-          sudo useradd -m -s /bin/bash Rayat
-          echo "Rayat:password123" | sudo chpasswd
-          sudo usermod -aG sudo Rayat
+          if (-not (Get-LocalUser -Name "Rayat" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "Rayat" -NoPassword -AccountNeverExpires
+          }
+          Set-LocalUser -Name "Rayat" -PasswordNeverExpires $true
+          $user = [ADSI]"WinNT://localhost/Rayat,user"
+          $user.Put("PasswordExpired", 0)
+          $user.SetInfo()
+          Add-LocalGroupMember -Group "Administrators" -Member "Rayat"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Rayat"
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.92.3-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Establish Tailscale Connection
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          if (-not $tsIP) { exit 1 }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Install and Setup AnyDesk
+        run: |
+          # Download AnyDesk
+          Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile "AnyDesk.exe"
           
-          # Force XFCE session with D-Bus support
-          # Using dbus-launch ensures the desktop actually starts
-          echo "exec dbus-launch --exit-with-session startxfce4" > xsession_tmp
-          sudo mv xsession_tmp /home/Rayat/.xsession
-          sudo chown Rayat:Rayat /home/Rayat/.xsession
+          # Install AnyDesk Silently
+          Start-Process .\AnyDesk.exe -ArgumentList "--install", "$env:ProgramFiles(x86)\AnyDesk", "--silent" -Wait
           
-          # Wipe and replace startwm.sh completely
-          sudo bash -c 'cat > /etc/xrdp/startwm.sh <<EOF
-          #!/bin/sh
-          if [ -r /etc/default/locale ]; then
-            . /etc/default/locale
-            export LANG LANGUAGE
-          fi
-          # Ensure environment is clean
-          unset DBUS_SESSION_BUS_ADDRESS
-          unset XDG_RUNTIME_DIR
-          . /etc/X11/Xsession
-          EOF'
-          sudo chmod +x /etc/xrdp/startwm.sh
+          # Set a Password for Unattended Access (Replace 'YourStrongPassword' if desired)
+          echo "YourStrongPassword" | & "$env:ProgramFiles(x86)\AnyDesk\AnyDesk.exe" --set-password
+          
+          # Get AnyDesk ID to show in GitHub logs
+          $anydeskId = & "$env:ProgramFiles(x86)\AnyDesk\AnyDesk.exe" --get-id
+          echo "ANYDESK_ID=$anydeskId" >> $env:GITHUB_ENV
+          
+          # Launch AnyDesk in the background as the system service
+          Start-Process "$env:ProgramFiles(x86)\AnyDesk\AnyDesk.exe" -WindowStyle Hidden
 
-          # Fix XRDP Permissions
-          sudo adduser xrdp ssl-cert
-          sudo systemctl restart xrdp
-
-      - name: 3. Install and Connect Tailscale
-        env:
-          TS_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+      - name: Verify RDP Accessibility
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --auth-key=$TS_KEY --hostname=gh-ubuntu-runner
-          echo "TAILSCALE_IP=$(tailscale ip -4)" >> $GITHUB_ENV
+          Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
 
-      - name: 4. RDP Connection Ready
+      - name: Maintain Connection + Watch RDP User
         run: |
-          echo "=== CONNECT NOW ==="
-          echo "Address: ${{ env.TAILSCALE_IP }}"
-          echo "Username: Rayat"
-          echo "Password: password123"
-          tail -f /dev/null
+          Write-Host "`n=== ACCESS CREDENTIALS ==="
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host "AnyDesk ID: $env:ANYDESK_ID"
+          Write-Host "AnyDesk Password: YourStrongPassword"
+          Write-Host "User: Rayat (No Password)"
+          Write-Host "==========================`n"
+          while ($true) { Start-Sleep -Seconds 300 }
